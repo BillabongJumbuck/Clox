@@ -1,0 +1,24 @@
+fun f(fx, a, b) {
+    return fx(a,b);
+}
+
+fun add(a, b){
+    return a + b;
+}
+
+fun mul(a, b){
+    return a * b;
+}
+
+fun g() {
+    fun sub(a, b) {
+        return a - b;
+    }
+    return sub;
+}
+
+var a = 3;
+var b = 4;
+print f(add, a, b);
+print f(mul, a, b);
+print f( g(), a, b);

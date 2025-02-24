@@ -1,0 +1,9 @@
+var a = 1;
+
+{
+    fun f(x){
+        print a;
+    }
+    var a = 2;
+    f(5);
+}

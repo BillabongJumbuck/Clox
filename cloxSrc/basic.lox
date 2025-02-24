@@ -1,0 +1,28 @@
+print "Hello Lox";
+
+var a = 1; // comment
+var b = a + 2;
+var c = b * (b + 2) / a;
+
+class people{
+}
+
+class man < people {
+}
+
+fun add(a, b){
+    return a + b;
+}
+
+add(1, 2);
+add(b, c);
+
+if( a > b){
+    print a;
+}else{
+    print b;
+}
+
+while (a < b){
+    a = a + 1;
+}
