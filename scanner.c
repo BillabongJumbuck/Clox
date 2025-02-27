@@ -174,6 +174,9 @@ static Token identifier() {
     return makeToken(identifierType());
 }
 
+/**
+ * 跳过空白，获取一个Token
+ */
 Token scanToken() {
     skipWhitespace();
     scanner.start = scanner.current;
