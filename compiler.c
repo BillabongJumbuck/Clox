@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 #include "common.h"
 #include "compiler.h"
@@ -47,7 +48,15 @@ typedef struct {
     int depth;
 } Local;
 
-typedef struct {
+typedef enum {
+    TYPE_FUNCTION,
+    TYPE_SCRIPT
+} FunctionType;
+
+typedef struct Compiler{
+    struct Compiler* enclosing;
+    ObjFunction* function;
+    FunctionType type;
     Local locals[UINT8_COUNT];
     int localCount;
     int scopeDepth;
@@ -55,7 +64,6 @@ typedef struct {
 
 Parser parser;
 Compiler* current = NULL;
-Chunk *compilingChunk;
 
 // 函数声明
 static void literal(bool canAssign);
@@ -70,15 +78,18 @@ static void statement();
 static void printStatement();
 static void expressionStatement();
 static void varDeclaration();
+static void funDeclaration();
 static void variable(bool canAssign);
 static void ifStatement();
 static void whileStatement();
 static void forStatement();
+static void returnStatement();
 static void and_(bool canAssign);
 static void or_(bool canAssign);
+static void call(bool canAssign);
 
 ParseRule rules[] = {
-        [TOKEN_LEFT_PAREN] = {grouping, NULL, PREC_NONE},
+        [TOKEN_LEFT_PAREN] = {grouping, call, PREC_CALL},
         [TOKEN_RIGHT_PAREN] = {NULL, NULL, PREC_NONE},
         [TOKEN_LEFT_BRACE] = {NULL, NULL, PREC_NONE},
         [TOKEN_RIGHT_BRACE] = {NULL, NULL, PREC_NONE},
@@ -121,7 +132,7 @@ ParseRule rules[] = {
 };
 
 static Chunk *currentChunk() {
-    return compilingChunk;
+    return &current->function->chunk;
 }
 
 static void errorAt(Token *token, const char *message) {
@@ -189,6 +200,7 @@ static void emitBytes(uint8_t byte1, uint8_t byte2) {
 }
 
 static void emitReturn() {
+    emitByte(OP_NIL);
     emitByte(OP_RETURN);
 }
 
@@ -208,10 +220,23 @@ static void emitConstant(Value value) {
     emitBytes(OP_CONSTANT, makeConstant(value));
 }
 
-static void initCompiler(Compiler* compiler) {
+static void initCompiler(Compiler* compiler, FunctionType type) {
+    compiler->enclosing = current;
+    compiler->function = NULL;
+    compiler->type = type;
     compiler->localCount = 0;
     compiler->scopeDepth = 0;
+    compiler->function = newFunction();
     current = compiler;
+
+    if (type != TYPE_SCRIPT) {
+        current->function->name = copyString(parser.previous.start, parser.previous.length);
+    }
+    
+    Local* local = &current->locals[current->localCount++];
+    local->depth = 0;
+    local->name.start = "";
+    local->name.length = 0;
 }
 
 static void number(bool canAssign) {
@@ -219,13 +244,18 @@ static void number(bool canAssign) {
     emitConstant(NUMBER_VAL(value));
 }
 
-static void endCompiler() {
+static ObjFunction* endCompiler() {
     emitReturn();
+    ObjFunction* function = current->function;
+
 #ifdef DEBUG_PRINT_CODE
     if(!parser.hadError) {
-        disassembleChunk(currentChunk(), "code");
+        disassembleChunk(currentChunk(), function->name != NULL ? function->name->chars : "<script>");
     }
 #endif
+
+    current = current->enclosing;
+    return function;
 }
 
 static ParseRule* getRule(TokenType type) {
@@ -367,7 +397,9 @@ static void synchronize() {
 }
 
 static void declaration() {
-    if (match(TOKEN_VAR)) {
+    if (match(TOKEN_FUN)) {
+        funDeclaration();
+    } else if (match(TOKEN_VAR)) {
         varDeclaration();
     } else {
         statement();
@@ -508,7 +540,10 @@ static void statement() {
         printStatement();
     } else if (match(TOKEN_IF)) {
         ifStatement();
-    } else if (match(TOKEN_WHILE)) {
+    } else if (match(TOKEN_RETURN)) {
+        returnStatement();
+    }
+    else if (match(TOKEN_WHILE)) {
         whileStatement();
     } else if (match(TOKEN_FOR)) {
         forStatement();
@@ -527,6 +562,20 @@ static void printStatement() {
     expression();
     consume(TOKEN_SEMICOLON, "Expect ';' after value.");
     emitByte(OP_PRINT);
+}
+
+static void returnStatement() {
+    if (current->type == TYPE_SCRIPT) {
+        error("Can't return from top-level code.");
+    }
+
+    if (match(TOKEN_SEMICOLON)) {
+        emitReturn();
+    } else {
+        expression();
+        consume(TOKEN_SEMICOLON, "Expect ';' after return value.");
+        emitByte(OP_RETURN);
+    }
 }
 
 static void expressionStatement() {
@@ -579,6 +628,12 @@ static void declareVariable() {
     addLocal(*name);
 }
 
+/**
+ * consume一个标识符TOKEN，然后声明该标识符
+ * @param errorMessage consume失败的错误信息
+ * @return 0->声明的是局部变量
+           other->声明的是全局变量，并将标识符字符串存入常量数组，返回在常量数组中的Index.
+ */
 static uint8_t parseVariable(const char* errorMessage) {
     consume(TOKEN_IDENTIFIER, errorMessage);
 
@@ -590,11 +645,18 @@ static uint8_t parseVariable(const char* errorMessage) {
 
 /**
  * 将局部变量的状态由“已声明未初始化”变为“已初始化”
+ * 将局部和全局的函数名的状态由“已声明未初始化”变为“已初始化”
  */
 static void makeInitialized() {
+    if (current->scopeDepth == 0) return; // 为global function打补丁
     current->locals[current->localCount-1].depth = current->scopeDepth;
 }
 
+/**
+ * 定义变量。若为局部变量，将变量标记为“已初始化”后返回
+ * 若为全局变量，发射OP_DEFINE_GLOBAL指令
+ * @param global 全局变量的初始化值在常量数组中的索引
+ */
 static void defineVariable(uint8_t global) {
     if (current->scopeDepth > 0) {
         makeInitialized();
@@ -662,6 +724,37 @@ static void variable(bool canAssign) {
     namedVariable(parser.previous, canAssign);
 }
 
+static void function(FunctionType type) {
+    Compiler compiler;
+    initCompiler(&compiler, type);
+    beginScope();
+
+    consume(TOKEN_LEFT_PAREN, "Expect '(' after function name.");
+    if (!check(TOKEN_RIGHT_PAREN)) {
+        do {
+            current->function->arity++;
+            if (current->function->arity > 255) {
+                error("Can't have more than 255 parameters.");
+            }
+            uint8_t constant = parseVariable("Expect parameter name.");
+            defineVariable(constant);
+        } while (match(TOKEN_COMMA));
+    }
+    consume(TOKEN_RIGHT_PAREN, "Expect ')' after parameters.");
+    consume(TOKEN_LEFT_BRACE, "Expect '{' before function body.");
+    block();
+
+    ObjFunction* function = endCompiler();
+    emitBytes(OP_CONSTANT, makeConstant(OBJ_VAL(function)));
+}
+
+static void funDeclaration() {
+    uint8_t global = parseVariable("Expect function name");
+    makeInitialized();
+    function(TYPE_FUNCTION);
+    defineVariable(global);
+}
+
 static void and_(bool canAssign) {
     int endJump = emitJump(OP_JUMP_IF_FALSE);
 
@@ -682,11 +775,34 @@ static void or_(bool canAssign){
     patchJump(endJump);
 }
 
-bool compile(const char *source, Chunk *chunk) {
+/**
+ * 处理函数调用的arguments
+ * @return 返回参数的数量
+ */
+static uint8_t argumentList() {
+    uint8_t argCount = 0;
+    if (!check(TOKEN_RIGHT_PAREN)) {
+        do {
+            expression();
+            if (argCount == 255) {
+                error("Can't have more than 255 arguments.");
+            }
+            argCount++;
+        } while (match(TOKEN_COMMA));
+    }
+    consume(TOKEN_RIGHT_PAREN, "Expect ')' after arguments.");
+    return argCount;
+}
+
+static void call(bool canAssign) {
+    uint8_t argCount = argumentList();
+    emitBytes(OP_CALL, argCount);
+}
+
+ObjFunction* compile(const char *source) {
     initScanner(source);
     Compiler compiler;
-    initCompiler(&compiler);
-    compilingChunk = chunk;
+    initCompiler(&compiler, TYPE_SCRIPT);
 
     parser.hadError = false;
     parser.panicMode = false;
@@ -697,6 +813,6 @@ bool compile(const char *source, Chunk *chunk) {
         declaration();
     }
 
-    endCompiler();
-    return !parser.hadError;
+    ObjFunction* function = endCompiler();
+    return parser.hadError ? NULL : function;
 }
