@@ -8,7 +8,8 @@
 #include "object.h"
 #include "vm.h"
 
-ObjFunction* compile(const char* source);
+ObjFunction *compile(const char *source);
+
 void markCompilerRoots();
 
 #endif //CLOX_COMPILER_H

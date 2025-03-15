@@ -132,9 +132,22 @@ static bool callValue(Value callee, int argCount) {
                 return true;
             }
             case OBJ_CLASS: {
-                ObjClass* klass = AS_CLASS(callee);
-                vm.stackTop[-argCount-1] = OBJ_VAL(newInstance(klass));
+                ObjClass *klass = AS_CLASS(callee);
+                vm.stackTop[-argCount - 1] = OBJ_VAL(newInstance(klass));
+                Value initializer;
+                if (tableGet(&klass->methods, vm.initString, &initializer)) {
+                    return call(AS_CLOSURE(initializer), argCount);
+                } else if (argCount != 0) {
+                    // 没有init()构造器，但在初始化时传入参数
+                    runtimeError("Expected 0 arguments but got %d.", argCount);
+                    return false;
+                }
                 return true;
+            }
+            case OBJ_BOUND_METHOD: {
+                ObjBoundMethod *bound = AS_BOUND_METHOD(callee);
+                vm.stackTop[-argCount - 1] = bound->receiver;
+                return call(bound->method, argCount);
             }
             default:
                 break; // Non-callable object type.
@@ -144,9 +157,9 @@ static bool callValue(Value callee, int argCount) {
     return false;
 }
 
-static ObjUpvalue* captureUpvalue(Value* local) {
-    ObjUpvalue* prevUpvalue = NULL;
-    ObjUpvalue* upvalue = vm.openUpvalues;
+static ObjUpvalue *captureUpvalue(Value *local) {
+    ObjUpvalue *prevUpvalue = NULL;
+    ObjUpvalue *upvalue = vm.openUpvalues;
     while (upvalue != NULL && upvalue->location > local) {
         prevUpvalue = upvalue;
         upvalue = upvalue->next;
@@ -156,10 +169,10 @@ static ObjUpvalue* captureUpvalue(Value* local) {
         return upvalue;
     }
 
-    ObjUpvalue* createdUpvalue = newUpvalue(local);
+    ObjUpvalue *createdUpvalue = newUpvalue(local);
     createdUpvalue->next = upvalue;
 
-    if(prevUpvalue == NULL) {
+    if (prevUpvalue == NULL) {
         vm.openUpvalues = createdUpvalue;
     } else {
         prevUpvalue->next = createdUpvalue;
@@ -168,13 +181,61 @@ static ObjUpvalue* captureUpvalue(Value* local) {
     return createdUpvalue;
 }
 
-static void closeUpvalues(Value* last) {
+static void closeUpvalues(Value *last) {
     while (vm.openUpvalues != NULL && vm.openUpvalues->location >= last) {
-        ObjUpvalue* upvalue = vm.openUpvalues;
+        ObjUpvalue *upvalue = vm.openUpvalues;
         upvalue->closed = *upvalue->location;
         upvalue->location = &upvalue->closed;
         vm.openUpvalues = vm.openUpvalues->next;
     }
+}
+
+static void defineMethod(ObjString *name) {
+    Value method = peek(0);
+    ObjClass *klass = AS_CLASS(peek(1));
+    tableSet(&klass->methods, name, method);
+    pop();
+}
+
+static bool bindMethod(ObjClass *klass, ObjString *name) {
+    Value method;
+    if (!tableGet(&klass->methods, name, &method)) {
+        runtimeError("undefined property '%s'.", name->chars);
+        return false;
+    }
+
+    ObjBoundMethod *bound = newBoundMethod(peek(0), AS_CLOSURE(method));
+    pop();
+    push(OBJ_VAL(bound));
+    return true;
+}
+
+static bool invokeFromClass(ObjClass* klass, ObjString* name, int argCount) {
+    Value method;
+    if (!tableGet(&klass->methods, name, &method)) {
+        runtimeError("Undefined property '%s'.", name->chars);
+        return false;
+    }
+    return call(AS_CLOSURE(method), argCount);
+}
+
+static bool invoke(ObjString* name, int argCount) {
+    Value receiver = peek(argCount);
+
+    if (!IS_INSTANCE(receiver)) {
+        runtimeError("Only instances have methods.");
+        return false;
+    }
+
+    ObjInstance* instance = AS_INSTANCE(receiver);
+
+    Value value;
+    if (tableGet(&instance->fields, name, &value)) {
+        vm.stackTop[-argCount - 1] = value;
+        return callValue(value, argCount);
+    }
+
+    return invokeFromClass(instance->klass, name, argCount);
 }
 
 void initVM() {
@@ -182,7 +243,7 @@ void initVM() {
     vm.objects = NULL;
 
     vm.bytesAllocated = 0;
-    vm.nextGC = 1024*1024;
+    vm.nextGC = 1024 * 1024;
 
     vm.grayCount = 0;
     vm.grayCapacity = 0;
@@ -191,12 +252,16 @@ void initVM() {
     initTable(&vm.globals);
     initTable(&vm.strings);
 
+    vm.initString = NULL;
+    vm.initString = copyString("init", 4);
+
     defineNative("clock", clockNative);
 }
 
 void freeVM() {
     freeTable(&vm.globals);
     freeTable(&vm.strings);
+    vm.initString = NULL;
     freeObjects();
 }
 
@@ -304,8 +369,8 @@ static InterpretResult run() {
                     runtimeError("Only instances have properties.");
                     return INTERPRET_RUNTIME_ERROR;
                 }
-                ObjInstance* instance = AS_INSTANCE(peek(0));
-                ObjString* name = READ_STRING();
+                ObjInstance *instance = AS_INSTANCE(peek(0));
+                ObjString *name = READ_STRING();
 
                 Value value;
                 if (tableGet(&instance->fields, name, &value)) {
@@ -314,8 +379,10 @@ static InterpretResult run() {
                     break;
                 }
 
-                runtimeError("Undefined property '%s'.", name->chars);
-                return INTERPRET_RUNTIME_ERROR;
+                if (!bindMethod(instance->klass, name)) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                break;
             }
             case OP_SET_PROPERTY: {
                 if (!IS_INSTANCE(peek(1))) {
@@ -402,11 +469,20 @@ static InterpretResult run() {
                 frame = &vm.frames[vm.frameCount - 1];
                 break;
             }
+            case OP_INVOKE: {
+                ObjString* method = READ_STRING();
+                int argCount = READ_BYTE();
+                if (!invoke(method, argCount)) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                frame = &vm.frames[vm.frameCount - 1];
+                break;
+            }
             case OP_CLOSURE: {
                 ObjFunction *function = AS_FUNCTION(READ_CONSTANT());
                 ObjClosure *closure = newClosure(function);
                 push(OBJ_VAL(closure));
-                for (int i=0;i < closure->upvalueCount;i++) {
+                for (int i = 0; i < closure->upvalueCount; i++) {
                     uint8_t isLocal = READ_BYTE();
                     uint8_t index = READ_BYTE();
                     if (isLocal) {
@@ -418,7 +494,7 @@ static InterpretResult run() {
                 break;
             }
             case OP_CLOSE_UPVALUE: {
-                closeUpvalues(vm.stackTop-1);
+                closeUpvalues(vm.stackTop - 1);
                 pop();
                 break;
             }
@@ -440,6 +516,10 @@ static InterpretResult run() {
                 push(OBJ_VAL(newClass(READ_STRING())));
                 break;
             }
+            case OP_METHOD: {
+                defineMethod(READ_STRING());
+                break;
+            }
         }
     }
 
@@ -455,7 +535,7 @@ InterpretResult interpret(const char *source) {
     if (function == NULL) return INTERPRET_COMPILE_ERROR;
 
     push(OBJ_VAL(function));
-    ObjClosure* closure = newClosure(function);
+    ObjClosure *closure = newClosure(function);
     pop();
     push(OBJ_VAL(closure));
     call(closure, 0);

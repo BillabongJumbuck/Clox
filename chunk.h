@@ -37,23 +37,28 @@ typedef enum {
     OP_JUMP_IF_FALSE,
     OP_LOOP,
     OP_CALL,
+    OP_INVOKE,
     OP_CLOSURE,
     OP_CLOSE_UPVALUE,
     OP_RETURN,
     OP_CLASS,
+    OP_METHOD,
 } OpCode;
 
 typedef struct {
     int count;
     int capacity;
-    uint8_t* code;
-    int* lines;
+    uint8_t *code;
+    int *lines;
     ValueArray constants;
 } Chunk;
 
-void initChunk(Chunk* chunk);
-void freeChunk(Chunk* chunk);
-void writeChunk(Chunk* chunk, uint8_t byte, int line);
-int addConstant(Chunk* chunk, Value value);
+void initChunk(Chunk *chunk);
+
+void freeChunk(Chunk *chunk);
+
+void writeChunk(Chunk *chunk, uint8_t byte, int line);
+
+int addConstant(Chunk *chunk, Value value);
 
 #endif //CLOX_CHUNK_H
