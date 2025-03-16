@@ -43,7 +43,7 @@ typedef enum {
 struct Obj {
     ObjType type;
     bool isMarked;
-    struct Obj* next;
+    struct Obj *next;
 };
 
 typedef struct {
@@ -51,42 +51,42 @@ typedef struct {
     int arity;
     int upvalueCount; // 函数捕获的“被闭包”的变量的数量
     Chunk chunk;
-    ObjString* name;
+    ObjString *name;
 } ObjFunction;
 
 typedef struct ObjUpvalue {
     Obj obj;
-    Value* location;
+    Value *location;
     Value closed;
-    struct ObjUpvalue* next;
+    struct ObjUpvalue *next;
 } ObjUpvalue;
 
 typedef struct {
     Obj obj;
-    ObjFunction* function;
-    ObjUpvalue** upvalues;
+    ObjFunction *function;
+    ObjUpvalue **upvalues;
     int upvalueCount;
 } ObjClosure;
 
 typedef struct {
     Obj obj;
-    ObjString* name;
+    ObjString *name;
     Table methods;
 } ObjClass;
 
 typedef struct {
     Obj obj;
-    ObjClass* klass;
+    ObjClass *klass;
     Table fields;
 } ObjInstance;
 
 typedef struct {
     Obj obj;
     Value receiver;
-    ObjClosure* method;
+    ObjClosure *method;
 } ObjBoundMethod;
 
-typedef Value (*NativeFn)(int argCount, Value* args);
+typedef Value (*NativeFn)(int argCount, Value *args);
 
 typedef struct {
     Obj obj;
@@ -101,17 +101,27 @@ struct ObjString {
 };
 
 ObjBoundMethod *newBoundMethod(Value receiver, ObjClosure *method);
-ObjInstance* newInstance(ObjClass* klass);
-ObjClass* newClass(ObjString* name);
-ObjClosure* newClosure(ObjFunction* function);
-ObjFunction* newFunction();
-ObjNative* newNative(NativeFn function);
-ObjUpvalue* newUpvalue(Value* slot);
-ObjString *takeString(char* chars, int length);
-ObjString *copyString(const char* chars, int length);
+
+ObjInstance *newInstance(ObjClass *klass);
+
+ObjClass *newClass(ObjString *name);
+
+ObjClosure *newClosure(ObjFunction *function);
+
+ObjFunction *newFunction();
+
+ObjNative *newNative(NativeFn function);
+
+ObjUpvalue *newUpvalue(Value *slot);
+
+ObjString *takeString(char *chars, int length);
+
+ObjString *copyString(const char *chars, int length);
+
 void printObject(Value value);
 
 static inline bool isObjType(Value value, ObjType type) {
     return IS_OBJ(value) && AS_OBJ(value)->type == type;
 }
+
 #endif //CLOX_OBJECT_H
